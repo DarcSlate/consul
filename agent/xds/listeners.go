@@ -68,9 +68,9 @@ func (s *Server) listenersFromSnapshotConnectProxy(cfgSnap *proxycfg.ConfigSnaps
 
 		var upstreamListener proto.Message
 		if chain == nil || chain.IsDefault() {
-			upstreamListener, err = s.makeUpstreamListenerIgnoreDiscoveryChain(&u, chain, cfgSnap)
+			upstreamListener, err = s.makeUpstreamListenerIgnoreDiscoveryChain(&u, chain, cfgSnap, nil)
 		} else {
-			upstreamListener, err = s.makeUpstreamListenerForDiscoveryChain(&u, chain, cfgSnap)
+			upstreamListener, err = s.makeUpstreamListenerForDiscoveryChain(&u, chain, cfgSnap, nil)
 		}
 		if err != nil {
 			return nil, err
@@ -233,6 +233,11 @@ func (s *Server) listenersFromSnapshotMeshGateway(cfgSnap *proxycfg.ConfigSnapsh
 func (s *Server) listenersFromSnapshotIngressGateway(cfgSnap *proxycfg.ConfigSnapshot) ([]proto.Message, error) {
 	var resources []proto.Message
 	for listenerKey, upstreams := range cfgSnap.IngressGateway.Upstreams {
+		tlsContext := &envoyauth.DownstreamTlsContext{
+			CommonTlsContext:         makeCommonTLSContext(cfgSnap),
+			RequireClientCertificate: &types.BoolValue{Value: false},
+		}
+
 		if listenerKey.Protocol == "tcp" {
 			u := upstreams[0]
 			id := u.Identifier()
@@ -242,9 +247,9 @@ func (s *Server) listenersFromSnapshotIngressGateway(cfgSnap *proxycfg.ConfigSna
 			var upstreamListener proto.Message
 			var err error
 			if chain == nil || chain.IsDefault() {
-				upstreamListener, err = s.makeUpstreamListenerIgnoreDiscoveryChain(&u, chain, cfgSnap)
+				upstreamListener, err = s.makeUpstreamListenerIgnoreDiscoveryChain(&u, chain, cfgSnap, tlsContext)
 			} else {
-				upstreamListener, err = s.makeUpstreamListenerForDiscoveryChain(&u, chain, cfgSnap)
+				upstreamListener, err = s.makeUpstreamListenerForDiscoveryChain(&u, chain, cfgSnap, tlsContext)
 			}
 			if err != nil {
 				return nil, err
@@ -269,6 +274,7 @@ func (s *Server) listenersFromSnapshotIngressGateway(cfgSnap *proxycfg.ConfigSna
 					Filters: []envoylistener.Filter{
 						filter,
 					},
+					TlsContext: tlsContext,
 				},
 			}
 			resources = append(resources, listener)
@@ -496,6 +502,7 @@ func (s *Server) makeUpstreamListenerIgnoreDiscoveryChain(
 	u *structs.Upstream,
 	chain *structs.CompiledDiscoveryChain,
 	cfgSnap *proxycfg.ConfigSnapshot,
+	tlsContext *envoyauth.DownstreamTlsContext,
 ) (proto.Message, error) {
 	cfg, err := ParseUpstreamConfig(u.Config)
 	if err != nil {
@@ -534,6 +541,7 @@ func (s *Server) makeUpstreamListenerIgnoreDiscoveryChain(
 			Filters: []envoylistener.Filter{
 				filter,
 			},
+			TlsContext: tlsContext,
 		},
 	}
 	return l, nil
@@ -645,6 +653,7 @@ func (s *Server) makeUpstreamListenerForDiscoveryChain(
 	u *structs.Upstream,
 	chain *structs.CompiledDiscoveryChain,
 	cfgSnap *proxycfg.ConfigSnapshot,
+	tlsContext *envoyauth.DownstreamTlsContext,
 ) (proto.Message, error) {
 	cfg, err := ParseUpstreamConfigNoDefaults(u.Config)
 	if err != nil {
@@ -701,6 +710,7 @@ func (s *Server) makeUpstreamListenerForDiscoveryChain(
 			Filters: []envoylistener.Filter{
 				filter,
 			},
+			TlsContext: tlsContext,
 		},
 	}
 	return l, nil
