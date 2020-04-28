@@ -432,11 +432,7 @@ func (s *Server) makePublicListener(cfgSnap *proxycfg.ConfigSnapshot, token stri
 			return nil, err
 		}
 		l.FilterChains = []envoylistener.FilterChain{
-			{
-				Filters: []envoylistener.Filter{
-					filter,
-				},
-			},
+			{Filters: []envoylistener.Filter{filter}},
 		}
 	}
 
@@ -546,11 +542,7 @@ func (s *Server) makeUpstreamListenerIgnoreDiscoveryChain(
 	}
 
 	l.FilterChains = []envoylistener.FilterChain{
-		{
-			Filters: []envoylistener.Filter{
-				filter,
-			},
-		},
+		{Filters: []envoylistener.Filter{filter}},
 	}
 	return l, nil
 }
@@ -918,21 +910,11 @@ func makeHTTPFilter(
 			return envoylistener.Filter{}, fmt.Errorf("must specify cluster name when not using RDS")
 		}
 		route := envoyroute.Route{
-			Match: envoyroute.RouteMatch{
-				PathSpecifier: &envoyroute.RouteMatch_Prefix{
-					Prefix: "/",
-				},
-				// TODO(banks) Envoy supports matching only valid GRPC
-				// requests which might be nice to add here for gRPC services
-				// but it's not supported in our current envoy SDK version
-				// although docs say it was supported by 1.8.0. Going to defer
-				// that until we've updated the deps.
-			},
+			Match: makeDefaultRouteMatch(),
 			Action: &envoyroute.Route_Route{
 				Route: &envoyroute.RouteAction{
-					ClusterSpecifier: &envoyroute.RouteAction_Cluster{
-						Cluster: cluster,
-					},
+					ClusterSpecifier: &envoyroute.RouteAction_Cluster{Cluster: cluster},
+					// TODO: HashPolicy:
 				},
 			},
 		}
