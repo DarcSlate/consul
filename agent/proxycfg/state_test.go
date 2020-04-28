@@ -195,7 +195,7 @@ func verifyDatacentersWatch(t testing.TB, cacheType string, request cache.Reques
 	require.True(t, ok)
 }
 
-func genVerifyLeafWatch(expectedService string, expectedDatacenter string) verifyWatchRequest {
+func genVerifyLeafWatchWithDNSSANs(expectedService string, expectedDatacenter string, expectedDNSSANs []string) verifyWatchRequest {
 	return func(t testing.TB, cacheType string, request cache.Request) {
 		require.Equal(t, cachetype.ConnectCALeafName, cacheType)
 
@@ -203,7 +203,12 @@ func genVerifyLeafWatch(expectedService string, expectedDatacenter string) verif
 		require.True(t, ok)
 		require.Equal(t, expectedDatacenter, reqReal.Datacenter)
 		require.Equal(t, expectedService, reqReal.Service)
+		require.ElementsMatch(t, expectedDNSSANs, reqReal.DNSSAN)
 	}
+}
+
+func genVerifyLeafWatch(expectedService string, expectedDatacenter string) verifyWatchRequest {
+	return genVerifyLeafWatchWithDNSSANs(expectedService, expectedDatacenter, nil)
 }
 
 func genVerifyIntentionWatch(expectedService string, expectedDatacenter string) verifyWatchRequest {
@@ -271,6 +276,36 @@ func genVerifyServiceSpecificRequest(expectedCacheType, expectedService, expecte
 
 func genVerifyServiceWatch(expectedService, expectedFilter, expectedDatacenter string, connect bool) verifyWatchRequest {
 	return genVerifyServiceSpecificRequest(cachetype.HealthServicesName, expectedService, expectedFilter, expectedDatacenter, connect)
+}
+
+func genVerifyGatewayServiceWatch(expectedService, expectedDatacenter string) verifyWatchRequest {
+	return genVerifyServiceSpecificRequest(cachetype.GatewayServicesName, expectedService, "", expectedDatacenter, false)
+}
+
+func genVerifyConfigEntryWatch(expectedKind, expectedName, expectedDatacenter string) verifyWatchRequest {
+	return func(t testing.TB, cacheType string, request cache.Request) {
+		require.Equal(t, cachetype.ConfigEntryName, cacheType)
+
+		reqReal, ok := request.(*structs.ConfigEntryQuery)
+		require.True(t, ok)
+		require.Equal(t, expectedKind, reqReal.Kind)
+		require.Equal(t, expectedName, reqReal.Name)
+		require.Equal(t, expectedDatacenter, reqReal.Datacenter)
+	}
+}
+
+func ingressConfigWatchEvent(tlsEnabled bool) cache.UpdateEvent {
+	return cache.UpdateEvent{
+		CorrelationID: gatewayConfigWatchID,
+		Result: &structs.ConfigEntryResponse{
+			Entry: &structs.IngressGatewayConfigEntry{
+				TLS: structs.GatewayTLSConfig{
+					Enabled: tlsEnabled,
+				},
+			},
+		},
+		Err: nil,
+	}
 }
 
 // This test is meant to exercise the various parts of the cache watching done by the state as
@@ -676,8 +711,9 @@ func TestState_WatchesAndUpdates(t *testing.T) {
 			stages: []verificationStage{
 				verificationStage{
 					requiredWatches: map[string]verifyWatchRequest{
-						rootsWatchID: genVerifyRootsWatch("dc1"),
-						leafWatchID:  genVerifyLeafWatch("ingress-gateway", "dc1"),
+						rootsWatchID:           genVerifyRootsWatch("dc1"),
+						gatewayConfigWatchID:   genVerifyConfigEntryWatch(structs.IngressGateway, "ingress-gateway", "dc1"),
+						gatewayServicesWatchID: genVerifyGatewayServiceWatch("ingress-gateway", "dc1"),
 					},
 					verifySnapshot: func(t testing.TB, snap *ConfigSnapshot) {
 						require.False(t, snap.Valid(), "gateway without root is not valid")
@@ -689,21 +725,18 @@ func TestState_WatchesAndUpdates(t *testing.T) {
 						rootWatchEvent(),
 					},
 					verifySnapshot: func(t testing.TB, snap *ConfigSnapshot) {
-						require.False(t, snap.Valid(), "gateway without leaf is not valid")
+						require.False(t, snap.Valid(), "gateway without config entry is not valid")
 						require.Equal(t, indexedRoots, snap.Roots)
 					},
 				},
 				verificationStage{
 					events: []cache.UpdateEvent{
-						cache.UpdateEvent{
-							CorrelationID: leafWatchID,
-							Result:        issuedCert,
-							Err:           nil,
-						},
+						ingressConfigWatchEvent(false),
 					},
 					verifySnapshot: func(t testing.TB, snap *ConfigSnapshot) {
-						require.True(t, snap.Valid(), "gateway with root and leaf certs is valid")
-						require.Equal(t, issuedCert, snap.IngressGateway.Leaf)
+						require.False(t, snap.Valid(), "gateway without hosts set is not valid")
+						require.True(t, snap.IngressGateway.TLSSet)
+						require.False(t, snap.IngressGateway.TLSEnabled)
 					},
 				},
 				verificationStage{
@@ -724,6 +757,9 @@ func TestState_WatchesAndUpdates(t *testing.T) {
 						},
 					},
 					verifySnapshot: func(t testing.TB, snap *ConfigSnapshot) {
+						require.False(t, snap.Valid(), "gateway without leaf is not valid")
+						require.True(t, snap.IngressGateway.HostsSet)
+						require.Len(t, snap.IngressGateway.Hosts, 0)
 						require.Len(t, snap.IngressGateway.Upstreams, 1)
 						key := IngressListenerKey{Protocol: "http", Port: 9999}
 						require.Equal(t, snap.IngressGateway.Upstreams[key], structs.Upstreams{
@@ -739,6 +775,22 @@ func TestState_WatchesAndUpdates(t *testing.T) {
 						})
 						require.Len(t, snap.IngressGateway.WatchedDiscoveryChains, 1)
 						require.Contains(t, snap.IngressGateway.WatchedDiscoveryChains, "api")
+					},
+				},
+				verificationStage{
+					requiredWatches: map[string]verifyWatchRequest{
+						leafWatchID: genVerifyLeafWatch("ingress-gateway", "dc1"),
+					},
+					events: []cache.UpdateEvent{
+						cache.UpdateEvent{
+							CorrelationID: leafWatchID,
+							Result:        issuedCert,
+							Err:           nil,
+						},
+					},
+					verifySnapshot: func(t testing.TB, snap *ConfigSnapshot) {
+						require.True(t, snap.Valid(), "gateway with root and leaf certs is valid")
+						require.Equal(t, issuedCert, snap.IngressGateway.Leaf)
 					},
 				},
 				verificationStage{
@@ -811,7 +863,7 @@ func TestState_WatchesAndUpdates(t *testing.T) {
 				},
 			},
 		},
-		"ingress-gateway-update-upstreams": testCase{
+		"ingress-gateway-with-tls-update-upstreams": testCase{
 			ns: structs.NodeService{
 				Kind:    structs.ServiceKindIngressGateway,
 				ID:      "ingress-gateway",
@@ -822,16 +874,13 @@ func TestState_WatchesAndUpdates(t *testing.T) {
 			stages: []verificationStage{
 				verificationStage{
 					requiredWatches: map[string]verifyWatchRequest{
-						rootsWatchID: genVerifyRootsWatch("dc1"),
-						leafWatchID:  genVerifyLeafWatch("ingress-gateway", "dc1"),
+						rootsWatchID:           genVerifyRootsWatch("dc1"),
+						gatewayConfigWatchID:   genVerifyConfigEntryWatch(structs.IngressGateway, "ingress-gateway", "dc1"),
+						gatewayServicesWatchID: genVerifyGatewayServiceWatch("ingress-gateway", "dc1"),
 					},
 					events: []cache.UpdateEvent{
 						rootWatchEvent(),
-						cache.UpdateEvent{
-							CorrelationID: leafWatchID,
-							Result:        issuedCert,
-							Err:           nil,
-						},
+						ingressConfigWatchEvent(true),
 						cache.UpdateEvent{
 							CorrelationID: gatewayServicesWatchID,
 							Result: &structs.IndexedGatewayServices{
@@ -839,22 +888,38 @@ func TestState_WatchesAndUpdates(t *testing.T) {
 									{
 										Gateway: structs.NewServiceID("ingress-gateway", nil),
 										Service: structs.NewServiceID("api", nil),
+										Hosts:   []string{"test.example.com"},
 										Port:    9999,
 									},
 								},
 							},
 							Err: nil,
 						},
+						cache.UpdateEvent{
+							CorrelationID: leafWatchID,
+							Result:        issuedCert,
+							Err:           nil,
+						},
 					},
 					verifySnapshot: func(t testing.TB, snap *ConfigSnapshot) {
 						require.True(t, snap.Valid())
+						require.True(t, snap.IngressGateway.TLSSet)
+						require.True(t, snap.IngressGateway.TLSEnabled)
+						require.True(t, snap.IngressGateway.HostsSet)
+						require.Len(t, snap.IngressGateway.Hosts, 1)
 						require.Len(t, snap.IngressGateway.Upstreams, 1)
 						require.Len(t, snap.IngressGateway.WatchedDiscoveryChains, 1)
 						require.Contains(t, snap.IngressGateway.WatchedDiscoveryChains, "api")
 					},
 				},
 				verificationStage{
-					requiredWatches: map[string]verifyWatchRequest{},
+					requiredWatches: map[string]verifyWatchRequest{
+						leafWatchID: genVerifyLeafWatchWithDNSSANs("ingress-gateway", "dc1", []string{
+							"test.example.com",
+							"*.ingress.consul.",
+							"*.ingress.alt.consul.",
+						}),
+					},
 					events: []cache.UpdateEvent{
 						cache.UpdateEvent{
 							CorrelationID: gatewayServicesWatchID,
@@ -893,6 +958,11 @@ func TestState_WatchesAndUpdates(t *testing.T) {
 			// setup the local datacenter information
 			state.source = &structs.QuerySource{
 				Datacenter: tc.sourceDC,
+			}
+
+			state.dnsConfig = DNSConfig{
+				Domain:    "consul.",
+				AltDomain: "alt.consul.",
 			}
 
 			// setup the ctx as initWatches expects this to be there
