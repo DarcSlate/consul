@@ -233,9 +233,12 @@ func (s *Server) listenersFromSnapshotMeshGateway(cfgSnap *proxycfg.ConfigSnapsh
 func (s *Server) listenersFromSnapshotIngressGateway(cfgSnap *proxycfg.ConfigSnapshot) ([]proto.Message, error) {
 	var resources []proto.Message
 	for listenerKey, upstreams := range cfgSnap.IngressGateway.Upstreams {
-		tlsContext := &envoyauth.DownstreamTlsContext{
-			CommonTlsContext:         makeCommonTLSContext(cfgSnap),
-			RequireClientCertificate: &types.BoolValue{Value: false},
+		var tlsContext *envoyauth.DownstreamTlsContext
+		if cfgSnap.IngressGateway.TLSEnabled {
+			tlsContext = &envoyauth.DownstreamTlsContext{
+				CommonTlsContext:         makeCommonTLSContext(cfgSnap),
+				RequireClientCertificate: &types.BoolValue{Value: false},
+			}
 		}
 
 		if listenerKey.Protocol == "tcp" {

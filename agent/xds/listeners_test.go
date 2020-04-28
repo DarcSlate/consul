@@ -326,6 +326,11 @@ func TestListenersFromSnapshot(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:   "ingress-with-tls-listener",
+			create: proxycfg.TestConfigSnapshotIngressWithTLSListener,
+			setup:  nil,
+		},
 	}
 
 	for _, tt := range tests {
